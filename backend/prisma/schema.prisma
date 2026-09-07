@@ -1,0 +1,43 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Document {
+  id         String   @id @default(uuid())
+  filename   String
+  filepath   String
+  pageCount  Int
+  uploadedAt DateTime @default(now())
+  status     String   @default("pending") // pending | processing | done | error
+  facts      Fact[]
+}
+
+model Fact {
+  id              String  @id // fact_<uuid>, assigned by extraction code
+  subject         String
+  predicate       String  // free-text, NOT an enum — supports dynamic schema
+  rawValue        String?
+  rawUnit         String?
+  normalizedValue Float?
+  normalizedUnit  String?
+  periodStart     String? // ISO date string (SQLite has no native Date)
+  periodEnd       String? // ISO date string
+  scope           String? // e.g. "consolidated", "standalone", "India", "global"
+  sourcePage      Int
+  evidenceQuote   String
+  confidence      Float
+  extractionNotes String?
+  raw             String  // full LLM JSON output for debugging
+
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id])
+
+  @@index([documentId])
+  @@index([predicate])
+  @@index([subject])
+}
