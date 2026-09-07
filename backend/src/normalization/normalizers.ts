@@ -4,7 +4,6 @@ import type { ExtractedFact } from '../extraction/llmExtractor.js';
 // These convert shorthand unit references to their base multiplier.
 // E.g., "₹ Cr" means the raw_value is in crores of INR → multiply by 10,000,000.
 
-const CURRENCY_MULTIPLIERS: Record<string, { multiplier: number; baseUnit: string }> = {};
 
 // Build case-insensitive regex patterns and their multipliers
 const MULTIPLIER_PATTERNS: { pattern: RegExp; multiplier: number }[] = [

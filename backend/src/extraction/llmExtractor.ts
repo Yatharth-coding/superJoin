@@ -28,6 +28,13 @@ export type LLMFact = z.infer<typeof LLMFactSchema>;
 export interface ExtractedFact extends LLMFact {
   id: string;
   raw: string; // serialized original LLM JSON for debugging
+  // Camel-case aliases set by normalizers (coexist with snake_case from LLM)
+  normalizedValue?: number | null;
+  normalizedUnit?: string | null;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  sourcePage?: number;
+  evidenceQuote?: string;
 }
 
 // ─── System prompt ─────────────────────────────────────────────────────────────
