@@ -33,11 +33,32 @@ model Fact {
   confidence      Float
   extractionNotes String?
   raw             String  // full LLM JSON output for debugging
+  isFlagged       Boolean @default(false)
+  flagReason      String?
 
   documentId String
   document   Document @relation(fields: [documentId], references: [id])
 
+  relationshipsA Relationship[] @relation("FactARelation")
+  relationshipsB Relationship[] @relation("FactBRelation")
+
   @@index([documentId])
   @@index([predicate])
   @@index([subject])
+}
+
+model Relationship {
+  id               String   @id @default(uuid())
+  factAId          String
+  factBId          String
+  factA            Fact     @relation("FactARelation", fields: [factAId], references: [id])
+  factB            Fact     @relation("FactBRelation", fields: [factBId], references: [id])
+  relationshipType String   // "CORROBORATED" | "CONTRADICTION" | "CONTEXT_RESOLVED" | "UNCERTAIN"
+  reasoning        String
+  confidence       Float
+  createdAt        DateTime @default(now())
+
+  @@unique([factAId, factBId])
+  @@index([factAId])
+  @@index([factBId])
 }
