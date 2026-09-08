@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import type { PageText } from './pdfExtractor.js';
@@ -75,21 +75,21 @@ Each fact object must have this shape:
 
 If the text contains NO extractable facts, return an empty array: []`;
 
-// ─── Claude API client ─────────────────────────────────────────────────────────
+// ─── Gemini API client ─────────────────────────────────────────────────────────
 
-let anthropicClient: Anthropic | null = null;
+let geminiClient: GoogleGenerativeAI | null = null;
 
-function getClient(): Anthropic {
-  if (!anthropicClient) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+function getClient(): GoogleGenerativeAI {
+  if (!geminiClient) {
+    const apiKey = process.env.GEMINI_API_KEY || process.env.ANTHROPIC_API_KEY; // Fallback in case user put Gemini key in ANTHROPIC_API_KEY var
+    
     if (!apiKey) {
-      throw new Error(
-        'ANTHROPIC_API_KEY is not set. Copy .env.example to .env and add your key.'
-      );
+      throw new Error('GEMINI_API_KEY is not set. Create a .env file in the backend folder and add your key.');
     }
-    anthropicClient = new Anthropic({ apiKey });
+    
+    geminiClient = new GoogleGenerativeAI(apiKey);
   }
-  return anthropicClient;
+  return geminiClient;
 }
 
 // ─── JSON parsing helpers ──────────────────────────────────────────────────────
@@ -131,10 +131,10 @@ function tryParseJSON(text: string): any | null {
 
 // ─── Extraction for a single chunk ─────────────────────────────────────────────
 
-const MAX_RETRIES = 2;
+const MAX_RETRIES = 5;
 
 /**
- * Calls Claude to extract facts from a chunk of PDF pages.
+ * Calls Gemini to extract facts from a chunk of PDF pages.
  * Retries once on JSON parse failure.
  */
 export async function extractFactsFromChunk(
@@ -155,25 +155,17 @@ export async function extractFactsFromChunk(
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const response = await client.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 4096,
-        system: SYSTEM_PROMPT,
-        messages: [
-          {
-            role: 'user',
-            content: userMessage,
-          },
-        ],
+      const model = client.getGenerativeModel({
+        model: 'gemini-flash-latest',
+        systemInstruction: SYSTEM_PROMPT,
       });
 
-      // Extract text content from response
-      const textBlock = response.content.find((block) => block.type === 'text');
-      if (!textBlock || textBlock.type !== 'text') {
-        throw new Error('No text content in Claude response');
+      const result = await model.generateContent(userMessage);
+      const rawOutput = result.response.text();
+      
+      if (!rawOutput) {
+        throw new Error('No text content in Gemini response');
       }
-
-      const rawOutput = textBlock.text;
       const parsed = tryParseJSON(rawOutput);
 
       if (parsed === null) {
@@ -198,8 +190,14 @@ export async function extractFactsFromChunk(
       // On last attempt, don't retry
       if (attempt === MAX_RETRIES - 1) break;
 
-      // Brief pause before retry
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // Handle 429 Quota Exceeded by waiting ~40s, otherwise brief pause
+      const errMsg = (err as Error).message;
+      if (errMsg.includes('429 Too Many Requests') || errMsg.includes('Quota exceeded')) {
+        console.warn(`[Rate Limit] Waiting 45 seconds before retry...`);
+        await new Promise((resolve) => setTimeout(resolve, 45000));
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
     }
   }
 
