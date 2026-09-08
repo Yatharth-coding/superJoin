@@ -56,7 +56,29 @@ NOT as additional LLM calls.
 in code is faster, cheaper, auditable, and reproducible. LLM-based normalization
 would be non-deterministic and harder to debug when values are wrong.
 
-## 7. Dates as ISO strings, not SQLite integers
+### Fact Extraction & Normalization
+- Extracted facts are modeled with a dynamic predicate (e.g. `revenue_from_services`) rather than a hardcoded enum. This allows the system to flexibly adapt to new documents.
+- Value normalization strips commas and normalizes units into standard base formats (e.g. `INR` instead of `Rs. Cr` with numbers multiplied appropriately) using a deterministic rules engine.
+
+## 7. Cross-Document Comparison (Reconciliation)
+
+**Goal:** Compare facts across documents to determine if they corroborate, contradict, or are resolved by context.
+
+**Decision: Two-Stage Hybrid Approach (Deterministic + LLM)**
+
+Comparing every fact against every other fact scales terribly ($O(N^2)$). Calling an LLM for all those pairs is too slow, too expensive, and prone to hallucinations on unrelated data.
+
+To solve this, we implemented a **Two-Stage Pipeline**:
+1. **Deterministic Candidate Matching:** Facts are evaluated using a lightweight word-overlap algorithm on their `subject` and `predicate`. If they aren't similar (e.g., comparing "Revenue" to "Employee Headcount"), they are instantly discarded.
+2. **Deterministic Shortcut:** If candidate facts match precisely on normalized values, periods, and scope, they are instantly marked as `CORROBORATED` without an LLM call.
+3. **LLM Reasoning Fallback:** If facts have different values or scopes, we pass them to Gemini to reason whether it's a genuine `CONTRADICTION` or `CONTEXT_RESOLVED` (e.g., Q3 vs FY24). 
+
+*Trade-off:* We lose some semantic matching capability by not using vector embeddings (e.g., "Sales" vs "Revenue" might miss in a pure string-overlap), but it's drastically cheaper and faster for a prototype. We also save heavily on LLM costs by pruning unrelated pairs and skipping obvious matches.
+
+**Incremental Processing**
+Reconciliation runs selectively via `POST /api/documents/:id/reconcile`. It only compares the newly uploaded document's facts against existing documents in the database and skips pairs that already have an existing relationship record.
+
+## 8. Dates as ISO strings, not SQLite integers
 
 **Decision**: Store `periodStart`/`periodEnd` as nullable `String` columns.
 
