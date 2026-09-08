@@ -180,7 +180,7 @@ function FactsBrowser() {
   const [predicate, setPredicate] = useState('');
 
   useEffect(() => {
-    fetch(`/api/facts${predicate ? \`?predicate=\${predicate}\` : ''}`)
+    fetch(`/api/facts${predicate ? `?predicate=${predicate}` : ''}`)
       .then(r => r.json())
       .then(d => setFacts(d.facts || []));
   }, [predicate]);
@@ -217,9 +217,9 @@ function FactsBrowser() {
                 <td className="p-3 font-medium text-slate-700">{f.subject}</td>
                 <td className="p-3 text-indigo-600 font-mono text-xs">{f.predicate}</td>
                 <td className="p-3">{f.rawValue} {f.rawUnit}</td>
-                <td className="p-3">{f.normalizedValue !== null ? \`\${f.normalizedValue} \${f.normalizedUnit}\` : '-'}</td>
+                <td className="p-3">{f.normalizedValue !== null ? `${f.normalizedValue} ${f.normalizedUnit}` : '-'}</td>
                 <td className="p-3 text-xs whitespace-nowrap">
-                  {f.periodStart ? \`\${f.periodStart} to \${f.periodEnd}\` : 'N/A'}
+                  {f.periodStart ? `${f.periodStart} to ${f.periodEnd}` : 'N/A'}
                   {f.scope && <div className="text-slate-400 mt-1">Scope: {f.scope}</div>}
                 </td>
                 <td className="p-3 text-xs italic text-slate-600 break-words border-l bg-slate-50/50">
@@ -243,7 +243,7 @@ function RelationshipsBrowser() {
   const [type, setType] = useState('');
 
   useEffect(() => {
-    fetch(`/api/relationships${type ? \`?type=\${type}\` : ''}`)
+    fetch(`/api/relationships${type ? `?type=${type}` : ''}`)
       .then(r => r.json())
       .then(setRels);
   }, [type]);
@@ -262,7 +262,7 @@ function RelationshipsBrowser() {
           <button 
             key={t}
             onClick={() => setType(t)}
-            className={\`px-3 py-1.5 rounded-full text-sm font-medium border \${type === t ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 hover:bg-slate-50'}\`}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium border ${type === t ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
           >
             {t || 'ALL'}
           </button>
@@ -272,7 +272,7 @@ function RelationshipsBrowser() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 overflow-auto pb-10">
         {rels.map(r => (
           <div key={r.id} className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col">
-            <div className={\`p-3 border-b font-bold text-xs flex justify-between items-center \${typeColors[r.relationshipType]}\`}>
+            <div className={`p-3 border-b font-bold text-xs flex justify-between items-center ${typeColors[r.relationshipType]}`}>
               <span>{r.relationshipType}</span>
               <span>{(r.confidence * 100).toFixed(0)}% Conf</span>
             </div>
@@ -351,7 +351,7 @@ function CaseCard({ type, description, id }: any) {
 
   useEffect(() => {
     if (id && id !== 'FILL_ME_IN') {
-      fetch(\`/api/relationships/\${id}\`).then(r => r.json()).then(setData);
+      fetch(`/api/relationships/${id}`).then(r => r.json()).then(setData);
     }
   }, [id]);
 
