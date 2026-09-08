@@ -110,12 +110,10 @@ app.post('/api/facts/:id/flag', async (req, res) => {
     res.status(500).json({ error: 'Failed to flag fact' });
   }
 });
-
-// ─── Startup ─────────────────────────────────────────────────────────────────
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
 
 export default app;
