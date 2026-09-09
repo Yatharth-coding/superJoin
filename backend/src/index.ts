@@ -4,6 +4,7 @@ import { runIncrementalReconciliation } from './reconciliation/engine.js';
 import cors from 'cors';
 import { documentRoutes } from './routes/documents.js';
 import { factRoutes } from './routes/facts.js';
+import prisma from './db.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
