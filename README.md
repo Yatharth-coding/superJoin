@@ -11,7 +11,7 @@ A prototype backend and frontend for extracting, normalizing, and reconciling st
 ### 1. Installation
 Clone the repository and install all dependencies from the root directory:
 ```bash
-git clone <your-repo-url>
+git clone [<repo-url>](https://github.com/Yatharth-coding/superJoin.git)
 cd starter-datasets
 npm install
 ```
@@ -50,7 +50,7 @@ npx tsx ingest.ts
 
 ## Video Demo Link
 
-[Insert Loom/YouTube Video Link Here]
+[[Insert Loom/YouTube Video Link Here](https://drive.google.com/drive/folders/1MIDum3wp84R5uRrHFPg3QEw73Ll_8i3D?usp=sharing)]
 
 ---
 
