@@ -11,8 +11,8 @@ A prototype backend and frontend for extracting, normalizing, and reconciling st
 ### 1. Installation
 Clone the repository and install all dependencies from the root directory:
 ```bash
-git clone [<repo-url>](https://github.com/Yatharth-coding/superJoin.git)
-cd starter-datasets
+git clone https://github.com/Yatharth-coding/superJoin.git
+cd superJoin
 npm install
 ```
 
@@ -23,14 +23,21 @@ cp backend/.env.example backend/.env
 ```
 Edit `backend/.env` and set `GEMINI_API_KEY=your_key_here`.
 
-### 3. Start the Backend
+### 3. Initialize the Database
+Generate the Prisma client and push the schema to create the local SQLite database (`dev.db`):
+```bash
+cd backend
+npm run db:push
+```
+
+### 4. Start the Backend
 ```bash
 cd backend
 npm start
 ```
-The backend runs on `http://localhost:3000`. It automatically creates a local SQLite database (`dev.db`).
+The backend runs on `http://localhost:3000`.
 
-### 4. Start the Frontend
+### 5. Start the Frontend
 In a new terminal window, start the React Vite frontend:
 ```bash
 cd frontend
@@ -38,7 +45,7 @@ npm run dev
 ```
 Open `http://localhost:5173` in your browser.
 
-### 5. Ingest the Starter PDFs
+### 6. Ingest the Starter PDFs
 You can use the frontend UI to upload the PDFs one by one. Alternatively, run the ingestion script from the `backend` folder which automatically uploads all 6 PDFs and triggers reconciliation:
 ```bash
 cd backend
@@ -50,7 +57,7 @@ npx tsx ingest.ts
 
 ## Video Demo Link
 
-[[Insert Loom/YouTube Video Link Here](https://drive.google.com/drive/folders/1MIDum3wp84R5uRrHFPg3QEw73Ll_8i3D?usp=sharing)]
+- [Watch Video Demo (Google Drive)](https://drive.google.com/drive/folders/1MIDum3wp84R5uRrHFPg3QEw73Ll_8i3D?usp=sharing)
 
 ---
 
