@@ -48,7 +48,7 @@ function stripMarkdownFences(text: string): string {
 export async function askLLMToReconcile(factA: Fact, factB: Fact): Promise<ReconcileResult> {
   const client = getClient();
   const model = client.getGenerativeModel({
-    model: 'gemini-flash-latest',
+    model: 'gemini-3.5-flash',
     systemInstruction: SYSTEM_PROMPT,
   });
 

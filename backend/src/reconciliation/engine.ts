@@ -24,13 +24,33 @@ export async function reconcilePair(factA: Fact, factB: Fact) {
   const samePeriod = factA.periodStart === factB.periodStart && factA.periodEnd === factB.periodEnd;
   const sameScope = factA.scope === factB.scope;
 
-  // Shortcut 1: Exact matches
+  // Shortcut 1: Exact matches (same value, unit, period, scope)
   if (sameNormValue && sameUnit && samePeriod && sameScope && factA.normalizedValue !== null) {
     return {
-      relationship_type: "CORROBORATED",
+      relationship_type: "CORROBORATED" as const,
       reasoning: "Deterministic match: Both facts have identical normalized values, units, periods, and scope.",
       confidence: 1.0
     };
+  }
+
+  // Shortcut 2: Same value+unit but different period → CONTEXT_RESOLVED
+  if (sameNormValue && sameUnit && !samePeriod && factA.normalizedValue !== null && factA.periodStart && factB.periodStart) {
+    return {
+      relationship_type: "CONTEXT_RESOLVED" as const,
+      reasoning: `Same value reported for different time periods: ${factA.periodStart} to ${factA.periodEnd} vs ${factB.periodStart} to ${factB.periodEnd}.`,
+      confidence: 0.9
+    };
+  }
+
+  // Shortcut 3: Same period+scope but different values → likely contradiction
+  if (!sameNormValue && samePeriod && sameScope && factA.normalizedValue !== null && factB.normalizedValue !== null) {
+    // Check if the difference is significant (>5%)
+    const max = Math.max(Math.abs(factA.normalizedValue), Math.abs(factB.normalizedValue));
+    const diff = Math.abs(factA.normalizedValue - factB.normalizedValue);
+    if (max > 0 && diff / max > 0.05) {
+      // Still ask LLM for nuance — it might be a scope/unit difference the normalizer missed
+      return askLLMToReconcile(factA, factB);
+    }
   }
 
   // If not a clear deterministic match, ask LLM to reason about it
@@ -38,7 +58,8 @@ export async function reconcilePair(factA: Fact, factB: Fact) {
 }
 
 /**
- * Runs reconciliation for a specific document against all other facts in the DB.
+ * Runs reconciliation for a specific document against all facts in the DB.
+ * Now also reconciles within the same document.
  */
 export async function runIncrementalReconciliation(documentId: string) {
   // 1. Get all facts for this document
@@ -48,22 +69,27 @@ export async function runIncrementalReconciliation(documentId: string) {
 
   if (newFacts.length === 0) return 0;
 
-  // 2. Get all facts from OTHER documents
-  const existingFacts = await prisma.fact.findMany({
-    where: {
-      documentId: { not: documentId }
-    }
-  });
+  // 2. Get ALL facts (including same document — for intra-doc reconciliation)
+  const allFacts = await prisma.fact.findMany();
 
-  if (existingFacts.length === 0) return 0;
+  if (allFacts.length < 2) return 0;
 
   let processedCount = 0;
+  const MAX_PAIRS = 150; // Cap to avoid very long runs
+  let pairsProcessed = 0;
 
-  // 3. Compare each new fact to existing facts
+  // 3. Compare each new fact to all other facts
   for (const newFact of newFacts) {
-    for (const oldFact of existingFacts) {
+    if (pairsProcessed >= MAX_PAIRS) break;
+
+    for (const otherFact of allFacts) {
+      if (pairsProcessed >= MAX_PAIRS) break;
+      
+      // Don't compare a fact with itself
+      if (newFact.id === otherFact.id) continue;
+
       // Check if they are candidates
-      if (!areCandidates(newFact, oldFact)) {
+      if (!areCandidates(newFact, otherFact)) {
         continue;
       }
 
@@ -71,8 +97,8 @@ export async function runIncrementalReconciliation(documentId: string) {
       const existingRel = await prisma.relationship.findFirst({
         where: {
           OR: [
-            { factAId: newFact.id, factBId: oldFact.id },
-            { factAId: oldFact.id, factBId: newFact.id }
+            { factAId: newFact.id, factBId: otherFact.id },
+            { factAId: otherFact.id, factBId: newFact.id }
           ]
         }
       });
@@ -81,13 +107,13 @@ export async function runIncrementalReconciliation(documentId: string) {
 
       // Reconcile
       try {
-        const result = await reconcilePair(newFact, oldFact);
+        const result = await reconcilePair(newFact, otherFact);
 
         // Save to DB
         await prisma.relationship.create({
           data: {
             factAId: newFact.id,
-            factBId: oldFact.id,
+            factBId: otherFact.id,
             relationshipType: result.relationship_type,
             reasoning: result.reasoning,
             confidence: result.confidence
@@ -95,11 +121,15 @@ export async function runIncrementalReconciliation(documentId: string) {
         });
 
         processedCount++;
+        pairsProcessed++;
+        console.log(`[Reconciliation] ${result.relationship_type}: "${newFact.predicate}" vs "${otherFact.predicate}" (pair ${pairsProcessed}/${MAX_PAIRS})`);
       } catch (err: any) {
-        console.error(`Failed to reconcile ${newFact.id} and ${oldFact.id}:`, err.message);
+        console.error(`[Reconciliation] Failed to reconcile ${newFact.id} and ${otherFact.id}:`, err.message);
+        pairsProcessed++; // Still count it to avoid infinite loops
       }
     }
   }
 
+  console.log(`[Reconciliation] Complete: ${processedCount} relationships created (${pairsProcessed} pairs processed)`);
   return processedCount;
 }

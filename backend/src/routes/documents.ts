@@ -4,7 +4,8 @@ import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import prisma from '../db.js';
-import { runExtractionPipeline } from '../extraction/pipeline.js';
+import { runExtractionPipeline, pipelineEvents, type ProgressEvent } from '../extraction/pipeline.js';
+import { runIncrementalReconciliation } from '../reconciliation/engine.js';
 
 const router = Router();
 
@@ -36,6 +37,7 @@ const upload = multer({
 });
 
 // ─── POST /api/documents/upload ────────────────────────────────────────────────
+// Returns immediately with the document record, then processes async.
 
 router.post('/upload', upload.single('file'), async (req: Request, res: Response): Promise<void> => {
   try {
@@ -58,39 +60,85 @@ router.post('/upload', upload.single('file'), async (req: Request, res: Response
 
     console.log(`[Upload] Document created: ${document.id} (${originalname})`);
 
-    // Run extraction pipeline synchronously (prototype — no background jobs)
-    await runExtractionPipeline(document.id, filepath);
+    // Return immediately — extraction happens in the background
+    res.status(201).json(document);
 
-    // Return the completed document with facts
-    const result = await prisma.document.findUnique({
-      where: { id: document.id },
-      include: {
-        facts: {
-          select: {
-            id: true,
-            subject: true,
-            predicate: true,
-            rawValue: true,
-            rawUnit: true,
-            normalizedValue: true,
-            normalizedUnit: true,
-            periodStart: true,
-            periodEnd: true,
-            scope: true,
-            sourcePage: true,
-            evidenceQuote: true,
-            confidence: true,
-            extractionNotes: true,
-          },
-        },
-      },
-    });
+    // Fire-and-forget: run extraction pipeline, then reconciliation
+    runExtractionPipeline(document.id, filepath)
+      .then(async () => {
+        console.log(`[Upload] Extraction complete for ${document.id}. Starting reconciliation...`);
+        try {
+          const count = await runIncrementalReconciliation(document.id);
+          console.log(`[Upload] Reconciliation complete: ${count} relationships found for ${document.id}`);
+        } catch (err) {
+          console.error(`[Upload] Reconciliation error for ${document.id}:`, err);
+        }
+      })
+      .catch((err) => {
+        console.error(`[Upload] Pipeline error for ${document.id}:`, err);
+      });
 
-    res.status(201).json(result);
   } catch (err) {
     console.error('[Upload] Error:', err);
     res.status(500).json({ error: 'Failed to process document', details: (err as Error).message });
   }
+});
+
+// ─── GET /api/documents/:id/progress — SSE stream ─────────────────────────────
+// Client connects here and receives real-time progress events.
+
+router.get('/:id/progress', async (req: Request, res: Response): Promise<void> => {
+  const documentId = req.params.id;
+  
+  // Check if document exists
+  const doc = await prisma.document.findUnique({ where: { id: documentId } });
+  if (!doc) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
+
+  // If already done or error, send final status immediately
+  if (doc.status === 'done' || doc.status === 'error') {
+    const factCount = await prisma.fact.count({ where: { documentId } });
+    res.json({
+      documentId,
+      stage: doc.status === 'done' ? 'done' : 'error',
+      factsExtracted: factCount,
+      message: doc.status === 'done' ? `Complete. ${factCount} facts extracted.` : 'Processing failed.',
+    });
+    return;
+  }
+
+  // Set up SSE headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  // Send initial event
+  res.write(`data: ${JSON.stringify({ documentId, stage: 'connected', message: 'Connected to progress stream' })}\n\n`);
+
+  // Listen for progress events
+  const onProgress = (event: ProgressEvent) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+    
+    // Close connection when done or error
+    if (event.stage === 'done' || event.stage === 'error') {
+      setTimeout(() => {
+        pipelineEvents.off(`progress:${documentId}`, onProgress);
+        res.end();
+      }, 500);
+    }
+  };
+
+  pipelineEvents.on(`progress:${documentId}`, onProgress);
+
+  // Clean up on client disconnect
+  req.on('close', () => {
+    pipelineEvents.off(`progress:${documentId}`, onProgress);
+  });
 });
 
 // ─── GET /api/documents ────────────────────────────────────────────────────────

@@ -39,12 +39,12 @@ export interface ExtractedFact extends LLMFact {
 
 // ─── System prompt ─────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are a precise fact extraction engine. Your job is to read PDF text and extract ONLY meaningful, structured facts as a JSON array.
+const SYSTEM_PROMPT = `You are a precise fact extraction engine. Your job is to read PDF text and extract ALL meaningful, structured facts as a JSON array.
 
 RULES:
 1. Extract numerical facts (financial figures, counts, percentages, ratios, dates), named entities with attributes, and key semantic facts (roles, statuses, designations).
 2. Do NOT invent or infer facts. Only extract what is EXPLICITLY stated in the text.
-3. For each fact, include the EXACT verbatim quote (evidence_quote) from the text where you found it. Copy the text precisely, including any formatting.
+3. For each fact, include the EXACT verbatim quote (evidence_quote) from the text where you found it. Copy the text precisely, including any formatting. Keep evidence_quote SHORT — 1 or 2 sentences max.
 4. If a value's meaning is genuinely ambiguous (e.g., "reduced by 20%" vs "is 20%"), set confidence lower (0.5-0.7) and explain the ambiguity in extraction_notes.
 5. Use snake_case for predicate names (e.g., "revenue_from_services", "employee_count", "gdp_growth_rate"). Create new predicate names as needed — do NOT limit yourself to a fixed set.
 6. Normalize subject names consistently (e.g., always "Delhivery Limited" not sometimes "Delhivery" and sometimes "Delhivery Ltd").
@@ -53,6 +53,7 @@ RULES:
 9. For period_start and period_end, use ISO date format (YYYY-MM-DD) when the text specifies a time period. Use Indian fiscal year conventions: FY24 = April 1, 2023 to March 31, 2024. Leave null if the fact is not time-bound.
 10. For raw_value, copy the number exactly as written in the text (e.g., "8,142" not 8142). For raw_unit, copy the unit exactly as written (e.g., "₹ Cr", "USD Mn", "%").
 11. For normalized_value, convert to the base unit (e.g., crores to plain INR, millions to plain USD, "18%" to 0.18). For normalized_unit, use the base unit (e.g., "INR", "USD", "ratio"). If you cannot normalize confidently, leave normalized_value as null and note why.
+12. Extract EVERY fact you can find. Be thorough — tables, bullet points, footnotes, headers all contain facts. A single page of a financial document may contain 10-30 facts.
 
 OUTPUT FORMAT:
 Return ONLY a valid JSON array of fact objects. No markdown, no explanation, no wrapping.
@@ -81,7 +82,7 @@ let geminiClient: GoogleGenerativeAI | null = null;
 
 function getClient(): GoogleGenerativeAI {
   if (!geminiClient) {
-    const apiKey = process.env.GEMINI_API_KEY || process.env.ANTHROPIC_API_KEY; // Fallback in case user put Gemini key in ANTHROPIC_API_KEY var
+    const apiKey = process.env.GEMINI_API_KEY || process.env.ANTHROPIC_API_KEY;
     
     if (!apiKey) {
       throw new Error('GEMINI_API_KEY is not set. Create a .env file in the backend folder and add your key.');
@@ -131,11 +132,24 @@ function tryParseJSON(text: string): any | null {
 
 // ─── Extraction for a single chunk ─────────────────────────────────────────────
 
-const MAX_RETRIES = 5;
+const MAX_RETRIES = 3;
+
+// Simple rate limiter — ensures minimum gap between API calls
+let lastApiCallTime = 0;
+const MIN_API_GAP_MS = 1500; // 1.5 seconds between calls
+
+async function rateLimitedWait(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastApiCallTime;
+  if (elapsed < MIN_API_GAP_MS) {
+    await new Promise(resolve => setTimeout(resolve, MIN_API_GAP_MS - elapsed));
+  }
+  lastApiCallTime = Date.now();
+}
 
 /**
  * Calls Gemini to extract facts from a chunk of PDF pages.
- * Retries once on JSON parse failure.
+ * Retries with exponential backoff on failure.
  */
 export async function extractFactsFromChunk(
   chunk: PageText[],
@@ -151,12 +165,21 @@ export async function extractFactsFromChunk(
     )
     .join('\n\n');
 
+  // Skip chunks with very little text (likely blank/image-only pages)
+  const totalText = chunk.reduce((acc, p) => acc + p.text.length, 0);
+  if (totalText < 50) {
+    console.log(`[Extractor] Skipping chunk (pages ${chunk.map(p => p.pageNumber).join(',')}) — too little text (${totalText} chars)`);
+    return [];
+  }
+
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
+      await rateLimitedWait();
+
       const model = client.getGenerativeModel({
-        model: 'gemini-flash-latest',
+        model: 'gemini-3.5-flash',
         systemInstruction: SYSTEM_PROMPT,
       });
 
@@ -172,38 +195,65 @@ export async function extractFactsFromChunk(
         throw new Error(`Failed to parse JSON from LLM output: ${rawOutput.slice(0, 200)}`);
       }
 
-      // Validate with Zod
-      const validated = LLMFactArraySchema.parse(parsed);
+      // Validate with Zod — use safeParse to be lenient
+      const validation = LLMFactArraySchema.safeParse(parsed);
+      
+      if (!validation.success) {
+        // Try to salvage: filter out invalid facts and keep valid ones
+        const validFacts: LLMFact[] = [];
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            const single = LLMFactSchema.safeParse(item);
+            if (single.success) {
+              validFacts.push(single.data);
+            }
+          }
+        }
+        
+        if (validFacts.length > 0) {
+          console.log(`[Extractor] Partial validation: kept ${validFacts.length}/${parsed.length} facts from pages [${chunk.map(p => p.pageNumber).join(',')}]`);
+          return validFacts.map((fact) => ({
+            ...fact,
+            id: `fact_${uuidv4()}`,
+            raw: JSON.stringify(fact),
+          }));
+        }
+        
+        throw new Error(`Zod validation failed: ${validation.error.message.slice(0, 200)}`);
+      }
 
       // Convert to ExtractedFacts with IDs
-      return validated.map((fact) => ({
+      return validation.data.map((fact) => ({
         ...fact,
         id: `fact_${uuidv4()}`,
         raw: JSON.stringify(fact),
       }));
     } catch (err) {
       lastError = err as Error;
+      const errMsg = (err as Error).message;
+      
       console.warn(
-        `Extraction attempt ${attempt + 1}/${MAX_RETRIES} failed for pages [${chunk.map((p) => p.pageNumber).join(', ')}]: ${(err as Error).message}`
+        `[Extractor] Attempt ${attempt + 1}/${MAX_RETRIES} failed for pages [${chunk.map((p) => p.pageNumber).join(', ')}]: ${errMsg.slice(0, 150)}`
       );
 
       // On last attempt, don't retry
       if (attempt === MAX_RETRIES - 1) break;
 
-      // Handle 429 Quota Exceeded by waiting ~40s, otherwise brief pause
-      const errMsg = (err as Error).message;
-      if (errMsg.includes('429 Too Many Requests') || errMsg.includes('Quota exceeded')) {
-        console.warn(`[Rate Limit] Waiting 45 seconds before retry...`);
-        await new Promise((resolve) => setTimeout(resolve, 45000));
+      // Exponential backoff
+      if (errMsg.includes('429') || errMsg.includes('Quota exceeded') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+        const waitTime = Math.min(60000, 15000 * Math.pow(2, attempt));
+        console.warn(`[Rate Limit] Waiting ${Math.round(waitTime / 1000)}s before retry...`);
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
       } else {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const waitTime = 3000 * Math.pow(2, attempt);
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
     }
   }
 
   // All retries failed — log and return empty rather than crashing the whole pipeline
   console.error(
-    `All extraction attempts failed for pages [${chunk.map((p) => p.pageNumber).join(', ')}]: ${lastError?.message}`
+    `[Extractor] All attempts failed for pages [${chunk.map((p) => p.pageNumber).join(', ')}]: ${lastError?.message?.slice(0, 200)}`
   );
   return [];
 }

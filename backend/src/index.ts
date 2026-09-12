@@ -45,11 +45,29 @@ app.get('/api/relationships', async (req, res) => {
     const relationships = await prisma.relationship.findMany({
       where: type ? { relationshipType: type } : undefined,
       include: {
-        factA: { select: { subject: true, predicate: true, rawValue: true, normalizedValue: true } },
-        factB: { select: { subject: true, predicate: true, rawValue: true, normalizedValue: true } }
+        factA: { 
+          select: { 
+            subject: true, predicate: true, rawValue: true, rawUnit: true,
+            normalizedValue: true, normalizedUnit: true,
+            periodStart: true, periodEnd: true, scope: true,
+            sourcePage: true, evidenceQuote: true, confidence: true,
+            documentId: true,
+            document: { select: { filename: true } }
+          } 
+        },
+        factB: { 
+          select: { 
+            subject: true, predicate: true, rawValue: true, rawUnit: true,
+            normalizedValue: true, normalizedUnit: true,
+            periodStart: true, periodEnd: true, scope: true,
+            sourcePage: true, evidenceQuote: true, confidence: true,
+            documentId: true,
+            document: { select: { filename: true } }
+          } 
+        }
       },
       orderBy: { createdAt: 'desc' },
-      take: 50
+      take: 200
     });
     res.json(relationships);
   } catch (error) {
@@ -73,6 +91,47 @@ app.get('/api/relationships/:id', async (req, res) => {
   }
 });
 
+// ─── Required Cases — dynamic lookup ──────────────────────────────────────────
+// Returns one example of each relationship type, plus a low-confidence/flagged fact
+
+app.get('/api/required-cases', async (_req, res) => {
+  try {
+    const types = ['CORROBORATED', 'CONTRADICTION', 'CONTEXT_RESOLVED', 'UNCERTAIN'];
+    const cases: Record<string, any> = {};
+
+    for (const type of types) {
+      const rel = await prisma.relationship.findFirst({
+        where: { relationshipType: type },
+        include: {
+          factA: { include: { document: true } },
+          factB: { include: { document: true } }
+        },
+        orderBy: { confidence: 'desc' }
+      });
+      cases[type] = rel || null;
+    }
+
+    // Find an extraction failure — low confidence or flagged fact
+    const failureFact = await prisma.fact.findFirst({
+      where: {
+        OR: [
+          { isFlagged: true },
+          { confidence: { lt: 0.6 } },
+          { extractionNotes: { not: null } }
+        ]
+      },
+      include: { document: true },
+      orderBy: { confidence: 'asc' }
+    });
+
+    cases['EXTRACTION_FAILURE'] = failureFact || null;
+
+    res.json(cases);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch required cases' });
+  }
+});
+
 app.get('/api/stats', async (req, res) => {
   try {
     const factCount = await prisma.fact.count();
@@ -85,6 +144,19 @@ app.get('/api/stats', async (req, res) => {
       _count: true
     });
 
+    // Document status breakdown
+    const docStatuses = await prisma.document.groupBy({
+      by: ['status'],
+      _count: true
+    });
+
+    // Recent documents
+    const recentDocs = await prisma.document.findMany({
+      orderBy: { uploadedAt: 'desc' },
+      take: 10,
+      include: { _count: { select: { facts: true } } }
+    });
+
     res.json({
       documents: docCount,
       facts: factCount,
@@ -92,7 +164,12 @@ app.get('/api/stats', async (req, res) => {
       relationships: relStats.reduce((acc, curr) => {
         acc[curr.relationshipType] = curr._count;
         return acc;
-      }, {} as Record<string, number>)
+      }, {} as Record<string, number>),
+      documentStatuses: docStatuses.reduce((acc, curr) => {
+        acc[curr.status] = curr._count;
+        return acc;
+      }, {} as Record<string, number>),
+      recentDocuments: recentDocs
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch stats' });
